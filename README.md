@@ -42,6 +42,26 @@ uv run ruff check .
 | Streamlit | `ADMIN_PASSWORD` | データ管理ページの保護 |
 | Streamlit | `REPO` | `owner/repo` |
 
+### APIキーの登録・更新
+
+EDINET のキーは `edb_` などのプレフィクスが付かない32桁の16進文字列。
+発行後、ローカルと GitHub Actions の両方に入れる。
+
+```bash
+# 1. ローカル: .env の EDINET_API_KEY= に記入
+
+# 2. GitHub Actions の Secret に登録（.env の値をそのまま送る）
+grep '^EDINET_API_KEY=' .env | cut -d= -f2- | tr -d '
+'   | gh secret set EDINET_API_KEY --repo YusukeKpd/edinet-dashboard
+
+# 3. 疎通確認（update ワークフローの "Check EDINET API key" ステップ）
+gh workflow run update.yml --repo YusukeKpd/edinet-dashboard
+```
+
+キーが無効な場合、EDINET は **HTTP 200 のまま** ボディに
+`{"StatusCode": 401, "message": "Access denied due to invalid subscription key..."}`
+を返す。ステータスコードだけを見ても成功に見えるので、必ずボディの `StatusCode` を確認すること。
+
 ## 開発状況
 
 - [x] フェーズ0: リポジトリ雛形
