@@ -54,7 +54,10 @@ EDINET のキーは `edb_` などのプレフィクスが付かない32桁の16�
 grep '^EDINET_API_KEY=' .env | cut -d= -f2- | tr -d '
 '   | gh secret set EDINET_API_KEY --repo YusukeKpd/edinet-dashboard
 
-# 3. 疎通確認（update ワークフローの "Check EDINET API key" ステップ）
+# 3. 疎通確認（ローカル）
+uv run python scripts/check_api_key.py
+
+# 4. 疎通確認（Actions 側。update ワークフローの "Check EDINET API key" ステップ）
 gh workflow run update.yml --repo YusukeKpd/edinet-dashboard
 ```
 
