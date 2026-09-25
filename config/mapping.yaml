@@ -88,10 +88,14 @@ cff:
   - jpigp_cor:NetCashProvidedByUsedInFinancingActivitiesIFRS
 
 # ---------------- 1株当たり・その他 ----------------
+# 正しい要素名は BasicEarningsLossPerShare (Loss 入り)。
+# Loss 無しの要素IDは実データに存在せず充足率0%だったため差し替えた (フェーズ1 ステップ5)
 eps:
-  - jpcrp_cor:BasicEarningsPerShareSummaryOfBusinessResults
-  - jpcrp_cor:NetIncomeLossPerShareSummaryOfBusinessResults
-  - jppfs_cor:BasicEarningsPerShare
+  - jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults
+  - jpcrp_cor:BasicEarningsLossPerShareIFRSSummaryOfBusinessResults
+  - jpcrp_cor:BasicEarningsLossPerShareUSGAAPSummaryOfBusinessResults
+  - jpigp_cor:BasicEarningsLossPerShareIFRS
+  - jppfs_cor:BasicEarningsLossPerShare
 
 bps:
   - jpcrp_cor:NetAssetsPerShareSummaryOfBusinessResults

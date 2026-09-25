@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 
 from etl.config import DUCKDB_PATH, ensure_dirs
 
@@ -22,7 +23,8 @@ CREATE TABLE IF NOT EXISTS documents (          -- 書類メタ
   doc_id TEXT PRIMARY KEY, edinet_code TEXT, doc_type_code TEXT,
   period_start DATE, period_end DATE, submit_datetime TIMESTAMP,
   accounting_standard TEXT,                     -- JGAAP / IFRS / USGAAP
-  withdrawn BOOLEAN, downloaded BOOLEAN, parsed BOOLEAN
+  withdrawn BOOLEAN, downloaded BOOLEAN, parsed BOOLEAN,
+  has_csv BOOLEAN                               -- 書類一覧APIの csvFlag。0 の書類は type=5 が無い
 );
 
 CREATE TABLE IF NOT EXISTS facts (              -- 縦持ち生データ (標準タクソノミ要素のみ)
@@ -51,6 +53,10 @@ CREATE TABLE IF NOT EXISTS etl_log (            -- 実行ログ
 """
 
 
+# 既存DBに後から足した列。CREATE TABLE IF NOT EXISTS では追加されないため個別に流す
+MIGRATIONS_SQL = ("ALTER TABLE documents ADD COLUMN IF NOT EXISTS has_csv BOOLEAN",)
+
+
 def connect(path: Path | str | None = None) -> duckdb.DuckDBPyConnection:
     """DuckDB に接続し、スキーマを保証して返す。
 
@@ -61,4 +67,35 @@ def connect(path: Path | str | None = None) -> duckdb.DuckDBPyConnection:
         path = DUCKDB_PATH
     con = duckdb.connect(str(path))
     con.execute(SCHEMA_SQL)
+    for sql in MIGRATIONS_SQL:
+        con.execute(sql)
     return con
+
+
+def upsert(
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    df: pd.DataFrame,
+    key: list[str],
+    preserve: list[str] | None = None,
+) -> int:
+    """df を table へ主キー key で UPSERT する。既存行は更新、無ければ挿入。
+
+    preserve に挙げた列は衝突時に更新しない（ETLの進捗フラグを取得し直しで
+    巻き戻さないため）。行の削除は一切行わない（CLAUDE.md ルール3）。
+    """
+    if df.empty:
+        return 0
+    cols = list(df.columns)
+    updatable = [c for c in cols if c not in key and c not in (preserve or [])]
+    set_clause = ", ".join(f"{c} = excluded.{c}" for c in updatable)
+    action = f"DO UPDATE SET {set_clause}" if updatable else "DO NOTHING"
+    con.register("_upsert_src", df)
+    try:
+        con.execute(
+            f"INSERT INTO {table} ({', '.join(cols)}) SELECT {', '.join(cols)} "
+            f"FROM _upsert_src ON CONFLICT ({', '.join(key)}) {action}"
+        )
+    finally:
+        con.unregister("_upsert_src")
+    return len(df)

@@ -1,21 +1,98 @@
-"""書類取得API (type=5) で XBRL->CSV の ZIP をダウンロードする。
+"""書類取得API (type=5) で XBRL->CSV の ZIP をダウンロードする（仕様書 §3.2 / §7.1）。
 
-エンドポイント: GET /documents/{docID}?type=5 （仕様書 §3.2）
-保存先: data/raw/{docID}.zip （config.RAW_DIR）
+    uv run python -m etl.fetch_docs --limit 20
 
-TODO(フェーズ1): 実装
-  - documents から downloaded=False の行を対象にする（取得済みはスキップ = 冪等）
-  - REQUEST_INTERVAL_SEC 以上の間隔、tenacity で指数バックオフ最大 MAX_RETRIES 回
-  - 1回の実行で MAX_DOCS_PER_RUN を超えたら打ち切り、残りは次回へ繰越（§7.1）
-  - 成功したら documents.downloaded = True
+保存先は data/raw/{docID}.zip。既にファイルがあれば API を叩かずスキップする（冪等）。
+1回の実行で MAX_DOCS_PER_RUN を超えたら打ち切り、残りは次回の実行へ繰り越す。
 """
 
 from __future__ import annotations
 
+import argparse
 
-def main() -> None:
-    raise NotImplementedError("フェーズ1 ステップ5で実装")
+import duckdb
+
+from etl import config, db
+from etl.edinet_client import EdinetError, EdinetTemporaryError, get_document_zip
+
+# ダウンロード対象の条件。取下げ・CSV無しの書類は永遠に取れないので最初から外す
+PENDING_SQL = """
+SELECT d.doc_id
+FROM documents d
+{join}
+WHERE coalesce(d.downloaded, FALSE) = FALSE
+  AND coalesce(d.withdrawn, FALSE) = FALSE
+  AND coalesce(d.has_csv, TRUE) = TRUE
+ORDER BY d.submit_datetime, d.doc_id
+LIMIT ?
+"""
+
+LISTED_JOIN = "JOIN companies c ON c.edinet_code = d.edinet_code AND c.listed"
+
+
+def pending_doc_ids(
+    con: duckdb.DuckDBPyConnection, limit: int, only_listed: bool = True
+) -> list[str]:
+    sql = PENDING_SQL.format(join=LISTED_JOIN if only_listed else "")
+    return [r[0] for r in con.execute(sql, [limit]).fetchall()]
+
+
+def download(con: duckdb.DuckDBPyConnection, doc_id: str) -> str:
+    """1件ダウンロードして downloaded を立てる。戻り値は "downloaded" / "cached"。"""
+    path = config.RAW_DIR / f"{doc_id}.zip"
+    status = "cached"
+    if not path.exists():
+        content = get_document_zip(doc_id)
+        # 途中で落ちた中身を downloaded=True にしないよう、一時ファイル経由で置く
+        tmp = path.with_suffix(".zip.part")
+        tmp.write_bytes(content)
+        tmp.replace(path)
+        status = "downloaded"
+    con.execute("UPDATE documents SET downloaded = TRUE WHERE doc_id = ?", [doc_id])
+    return status
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="etl.fetch_docs", description="type=5 ZIP のダウンロード")
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=config.MAX_DOCS_PER_RUN,
+        help=f"1回の実行で処理する上限（既定 {config.MAX_DOCS_PER_RUN}）",
+    )
+    p.add_argument("--all", action="store_true", help="非上場の提出者も対象にする")
+    p.add_argument("--db", help="DuckDBのパス（既定 data/edinet.duckdb）")
+    args = p.parse_args(argv)
+
+    config.ensure_dirs()
+    con = db.connect(args.db)
+    try:
+        doc_ids = pending_doc_ids(con, args.limit, only_listed=not args.all)
+        print(f"未取得 {len(doc_ids)}件を処理します（保存先 {config.RAW_DIR}）")
+
+        fetched = cached = failed = 0
+        for i, doc_id in enumerate(doc_ids, 1):
+            try:
+                if download(con, doc_id) == "downloaded":
+                    fetched += 1
+                else:
+                    cached += 1
+            except (EdinetError, EdinetTemporaryError) as e:
+                # downloaded は False のまま。次回の実行で再挑戦する
+                failed += 1
+                print(f"  NG {doc_id}: {e}")
+            if i % 50 == 0:
+                print(f"  ... {i}/{len(doc_ids)}")
+
+        remaining = con.execute(
+            "SELECT count(*) FROM documents WHERE coalesce(downloaded, FALSE) = FALSE "
+            "AND coalesce(withdrawn, FALSE) = FALSE AND coalesce(has_csv, TRUE) = TRUE"
+        ).fetchone()[0]
+        print(f"取得 {fetched}件 / 既存 {cached}件 / 失敗 {failed}件 / 未処理の残り {remaining}件")
+        return 1 if failed and not fetched else 0
+    finally:
+        con.close()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

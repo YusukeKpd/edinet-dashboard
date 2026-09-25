@@ -16,7 +16,7 @@ load_dotenv()
 ROOT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT_DIR / "config"
 DATA_DIR = ROOT_DIR / "data"
-RAW_DIR = DATA_DIR / "raw"          # 取得した ZIP のキャッシュ (docID 単位)
+RAW_DIR = DATA_DIR / "raw"  # 取得した ZIP のキャッシュ (docID 単位)
 PARQUET_DIR = DATA_DIR / "parquet"  # Releases へ上げる Parquet の出力先
 
 DUCKDB_PATH = DATA_DIR / "edinet.duckdb"
@@ -28,8 +28,14 @@ EDINET_API_KEY = os.getenv("EDINET_API_KEY", "")
 
 # 取得ルール (仕様書 §3.3)
 REQUEST_INTERVAL_SEC = 1.0  # リクエスト間隔は1秒以上
-MAX_RETRIES = 3             # 失敗時は指数バックオフで最大3回
+MAX_RETRIES = 3  # 失敗時は指数バックオフで最大3回
 RETRY_BACKOFF_SEC = 2.0
+
+# EDINETコードリスト (仕様書 §3.1)。APIキー不要の公開ZIP。中身は Shift_JIS の CSV 1枚
+EDINET_CODE_LIST_URL = (
+    "https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelist/Edinetcode.zip"
+)
+CODE_LIST_ENCODING = "cp932"
 
 # 対象書類 (仕様書 §1)
 TARGET_DOC_TYPE_CODES = ("120", "130", "160")  # 有報 / 訂正有報 / 半期報告書
@@ -43,6 +49,23 @@ MAX_DOCS_PER_RUN = 1500
 # EDINET の CSV は UTF-16 / タブ区切り (仕様書 §3.3)
 CSV_ENCODING = "utf-16"
 CSV_SEP = "\t"
+
+# ZIP 内で財務データが入っているディレクトリ (監査報告書 jpaud-* は除外する)
+CSV_DIR_IN_ZIP = "XBRL_TO_CSV/"
+
+# facts に保存する標準タクソノミの prefix (仕様書 §4.1「標準タクソノミ要素のみ保存」)。
+# 提出会社独自の拡張要素 (例: jpcrp030000-asr_E23973-000:...) は企業間で比較できないため捨てる
+STANDARD_TAXONOMY_PREFIXES = ("jpcrp_cor", "jppfs_cor", "jpigp_cor", "jpdei_cor")
+
+# コンテキストIDに付くと単体を意味するサフィックス (仕様書 §4.2)
+NONCONSOLIDATED_MEMBER = "_NonConsolidatedMember"
+
+# 会計基準 (jpdei_cor:AccountingStandardsDEI) -> documents.accounting_standard
+ACCOUNTING_STANDARDS = {
+    "Japan GAAP": "JGAAP",
+    "IFRS": "IFRS",
+    "US GAAP": "USGAAP",
+}
 
 # ---------------- GitHub Releases (仕様書 §4.3) ----------------
 RELEASE_TAG = "data-latest"
