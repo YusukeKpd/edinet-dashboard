@@ -47,6 +47,31 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      # Secrets.EDINET_API_KEY が Actions から届くかの疎通確認。
+      # キーが無効でもジョブは落とさず警告に留める（ETL本体はフェーズ2で実装するため）。
+      - name: Check EDINET API key
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+        run: |
+          uv run python - <<'EOF'
+          import os, sys, requests
+          key = os.getenv("EDINET_API_KEY", "")
+          if not key:
+              print("::warning::EDINET_API_KEY が未設定です。")
+              sys.exit(0)
+          r = requests.get(
+              "https://api.edinet-fsa.go.jp/api/v2/documents.json",
+              params={"date": "2026-09-25", "type": "2", "Subscription-Key": key},
+              timeout=30,
+          )
+          body = r.json()
+          if body.get("StatusCode"):
+              print(f"::warning::EDINET がキーを拒否しました: {body.get('message')}")
+          else:
+              n = body.get("metadata", {}).get("resultset", {}).get("count")
+              print(f"EDINET 疎通OK: {n}件")
+          EOF
+
       # TODO(フェーズ2 ステップ10): 下のプレースホルダを実際の ETL 実行に置き換える
       #   手順: Releasesから前回Parquet取得 -> 差分取得 -> パース
       #         -> financials/metrics再計算 -> Releases上書き -> etl_log追記

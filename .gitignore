@@ -1,6 +1,8 @@
 # --- Secrets (絶対にコミットしない) ---
 .env
 .streamlit/secrets.toml
+apikey/
+*apikey*.md
 
 # --- Python ---
 __pycache__/
