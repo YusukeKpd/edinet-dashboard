@@ -1,0 +1,9 @@
+# Streamlit Community Cloud 用の依存定義 (app/ の実行に必要なものだけ)
+# ETL 専用の依存 (tenacity, python-dotenv 等) はクラウド側には入れない。
+# 開発・ETL 側の正は pyproject.toml / uv.lock。
+streamlit>=1.40
+plotly>=5.24
+duckdb>=1.1
+pandas>=2.2
+pyarrow>=17.0
+requests>=2.32

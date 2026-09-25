@@ -1,0 +1,69 @@
+# EDINET財務データの定期更新（仕様書 §7.1）
+# 重い処理はすべてここで実行する。Streamlit 側では ETL を実行しない。
+name: update
+
+on:
+  schedule:
+    # UTC 日曜 21:00 = JST 月曜 6:00
+    - cron: "0 21 * * 0"
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: "APIを叩かず facts から financials/metrics を再生成する（mapping.yaml 変更時）"
+        type: boolean
+        default: false
+      backfill:
+        description: "バックフィルモード"
+        type: boolean
+        default: false
+      date_from:
+        description: "取得開始日 YYYY-MM-DD（バックフィル時）"
+        type: string
+        required: false
+      date_to:
+        description: "取得終了日 YYYY-MM-DD（バックフィル時）"
+        type: string
+        required: false
+
+# 多重実行防止。実行中のものはキャンセルせず待たせる
+concurrency:
+  group: etl
+  cancel-in-progress: false
+
+permissions:
+  contents: write # Releases(tag: data-latest) への書き込み
+
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120 # 6月下旬の提出集中期を考慮
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # TODO(フェーズ2 ステップ10): 下のプレースホルダを実際の ETL 実行に置き換える
+      #   手順: Releasesから前回Parquet取得 -> 差分取得 -> パース
+      #         -> financials/metrics再計算 -> Releases上書き -> etl_log追記
+      #   env:
+      #     EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #     REPO: ${{ github.repository }}
+      #   run: |
+      #     uv run python -m etl.run \
+      #       ${{ inputs.rebuild && '--rebuild' || '' }} \
+      #       ${{ inputs.backfill && '--backfill' || '' }} \
+      #       ${{ inputs.date_from && format('--date-from {0}', inputs.date_from) || '' }} \
+      #       ${{ inputs.date_to && format('--date-to {0}', inputs.date_to) || '' }}
+      - name: Run ETL (placeholder)
+        run: |
+          echo "ETL は未実装です（フェーズ2 ステップ10で実装）。"
+          echo "現時点ではワークフローの起動経路の確認のみを行います。"
+
+      - name: Run tests
+        run: uv run pytest

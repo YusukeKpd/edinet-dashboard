@@ -1,0 +1,24 @@
+# --- Secrets (絶対にコミットしない) ---
+.env
+.streamlit/secrets.toml
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- データ (正は GitHub Releases: tag data-latest) ---
+data/*
+!data/README.md
+*.duckdb
+*.duckdb.wal
+
+# --- OS / エディタ ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

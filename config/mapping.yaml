@@ -1,0 +1,118 @@
+# 勘定科目マッピング (仕様書 §4.2)
+#
+# 標準項目 -> 候補要素IDの「優先順リスト」。先頭から探して最初に見つかった値を採用する。
+# 優先度: (1)「主要な経営指標等の推移」要素 (*SummaryOfBusinessResults / IFRS版含む)
+#         (2) 本表要素 (jppfs_cor:* = 日本基準 / jpigp_cor:* = IFRS)
+#
+# コンテキスト: CurrentYearDuration / CurrentYearInstant / Prior{n}Year*
+#               _NonConsolidatedMember 付きは単体。連結優先、なければ単体。
+#
+# !! 注意 !!
+# ここに書かれた要素IDは初期の候補であり、実データでの検証はフェーズ1 ステップ6
+# (build_financials + tests/test_financials.py) で行う。項目充足率レポートを見ながら
+# 候補を段階的に追加していくこと。変更したら必ず `uv run pytest tests/test_financials.py`。
+
+# ---------------- 損益計算書 ----------------
+revenue:
+  - jpcrp_cor:NetSalesSummaryOfBusinessResults
+  - jpcrp_cor:RevenueIFRSSummaryOfBusinessResults
+  - jpcrp_cor:OperatingRevenue1SummaryOfBusinessResults
+  - jpcrp_cor:TotalNetRevenuesSummaryOfBusinessResults
+  - jppfs_cor:NetSales
+  - jppfs_cor:OperatingRevenue
+  - jpigp_cor:RevenueIFRS
+
+operating_income:
+  - jpcrp_cor:OperatingIncomeSummaryOfBusinessResults
+  - jppfs_cor:OperatingIncome
+  - jpigp_cor:OperatingProfitLossIFRS
+
+ordinary_income:
+  - jpcrp_cor:OrdinaryIncomeLossSummaryOfBusinessResults
+  - jppfs_cor:OrdinaryIncome
+  # IFRS には経常利益の概念が無い -> 税引前利益で代替
+  - jpigp_cor:ProfitLossBeforeTaxIFRS
+
+net_income:
+  - jpcrp_cor:ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults
+  - jpcrp_cor:NetIncomeLossSummaryOfBusinessResults
+  - jppfs_cor:ProfitLossAttributableToOwnersOfParent
+  - jpigp_cor:ProfitLossAttributableToOwnersOfParentIFRS
+
+# ---------------- 貸借対照表 ----------------
+total_assets:
+  - jpcrp_cor:TotalAssetsSummaryOfBusinessResults
+  - jppfs_cor:Assets
+  - jpigp_cor:TotalAssetsIFRS
+
+net_assets:
+  - jpcrp_cor:NetAssetsSummaryOfBusinessResults
+  - jppfs_cor:NetAssets
+  - jpigp_cor:TotalEquityIFRS
+
+# 自己資本 (= 純資産 - 非支配株主持分 - 新株予約権)。ROE・自己資本比率・D/Eの分母
+equity:
+  - jppfs_cor:ShareholdersEquity
+  - jpigp_cor:EquityAttributableToOwnersOfParentIFRS
+
+cash:
+  - jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults
+  - jppfs_cor:CashAndCashEquivalents
+  - jpigp_cor:CashAndCashEquivalentsIFRS
+
+# 有利子負債: 単一要素が存在しないため候補の「合計」を取る (_sum_items を参照)
+interest_bearing_debt:
+  - jppfs_cor:ShortTermLoansPayable
+  - jppfs_cor:CurrentPortionOfLongTermLoansPayable
+  - jppfs_cor:CurrentPortionOfBonds
+  - jppfs_cor:CommercialPapersLiabilities
+  - jppfs_cor:BondsPayable
+  - jppfs_cor:LongTermLoansPayable
+  - jppfs_cor:LeaseObligationsCL
+  - jppfs_cor:LeaseObligationsNCL
+
+# ---------------- キャッシュフロー ----------------
+cfo:
+  - jpcrp_cor:NetCashProvidedByUsedInOperatingActivitiesSummaryOfBusinessResults
+  - jppfs_cor:NetCashProvidedByUsedInOperatingActivities
+  - jpigp_cor:NetCashProvidedByUsedInOperatingActivitiesIFRS
+
+cfi:
+  - jpcrp_cor:NetCashProvidedByUsedInInvestingActivitiesSummaryOfBusinessResults
+  - jppfs_cor:NetCashProvidedByUsedInInvestmentActivities
+  - jpigp_cor:NetCashProvidedByUsedInInvestingActivitiesIFRS
+
+cff:
+  - jpcrp_cor:NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults
+  - jppfs_cor:NetCashProvidedByUsedInFinancingActivities
+  - jpigp_cor:NetCashProvidedByUsedInFinancingActivitiesIFRS
+
+# ---------------- 1株当たり・その他 ----------------
+eps:
+  - jpcrp_cor:BasicEarningsPerShareSummaryOfBusinessResults
+  - jpcrp_cor:NetIncomeLossPerShareSummaryOfBusinessResults
+  - jppfs_cor:BasicEarningsPerShare
+
+bps:
+  - jpcrp_cor:NetAssetsPerShareSummaryOfBusinessResults
+  - jppfs_cor:NetAssetsPerShare
+
+dividend_per_share:
+  - jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults
+
+employees:
+  - jpcrp_cor:NumberOfEmployees
+
+shares_outstanding:
+  - jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults
+  - jppfs_cor:NumberOfIssuedSharesAsOfBalanceSheetDate
+
+# ---------------- 取り扱いの指定 ----------------
+# 先頭一致で1つ採用するのではなく、見つかった候補すべての合計を採用する項目
+_sum_items:
+  - interest_bearing_debt
+
+# 金融業 (銀行・保険・証券) では欠損を許容する項目 (仕様書 §4.2)
+_allow_missing_for_financials:
+  - operating_income
+  - revenue
