@@ -262,7 +262,7 @@ def _row(element: str, context: str, value: str, unit: str = "JPY") -> list[str]
 
 
 def test_parse_zip_to_facts(tmp_path):
-    """標準タクソノミ・数値・次元なしコンテキストの行だけが facts になること。"""
+    """数値かつ次元なしコンテキストの行だけが facts になること。"""
     path = _make_zip(
         tmp_path,
         [
@@ -270,7 +270,6 @@ def test_parse_zip_to_facts(tmp_path):
             _row("jppfs_cor:NetSales", "CurrentYearDuration_NonConsolidatedMember", "920006000000"),
             _row("jpigp_cor:RevenueIFRS", "Prior1YearDuration", "1,234,567"),
             # 以下は落ちるべき行
-            _row("jpcrp030000-asr_E04236-000:Original", "CurrentYearDuration", "1"),  # 独自拡張
             _row("jpcrp_cor:SomeTextBlock", "FilingDateInstant", "長い本文"),  # 非数値
             _row("jppfs_cor:NetSales", "CurrentYearDuration_Segment1Member", "999"),  # 内訳
         ],
@@ -300,6 +299,21 @@ def test_parse_zip_reads_accounting_standard(tmp_path):
     )
     _, standard = parse_csv.parse_zip(path, "S100TEST")
     assert standard == "JGAAP"
+
+
+def test_parse_zip_keeps_extension_elements(tmp_path):
+    """提出会社独自の拡張要素も残す。トヨタの売上高のように拡張にしか無い数値がある。"""
+    path = _make_zip(
+        tmp_path,
+        [
+            _row(
+                "jpcrp030000-asr_E02144-000:TotalNetRevenuesIFRS", "CurrentYearDuration", "48036704"
+            )
+        ],
+    )
+    facts, _ = parse_csv.parse_zip(path, "S100TEST")
+    assert len(facts) == 1
+    assert facts.iloc[0]["value"] == 48036704.0
 
 
 def test_parse_zip_deduplicates(tmp_path):

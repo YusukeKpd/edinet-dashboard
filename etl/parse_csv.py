@@ -5,8 +5,9 @@
 CSV は UTF-16 / タブ区切り。列は
   要素ID / 項目名 / コンテキストID / 相対年度 / 連結・個別 / 期間・時点 / ユニットID / 単位 / 値
 
-facts に入れるのは「標準タクソノミ」かつ「数値」かつ「次元のないコンテキスト」の行だけ。
+facts に入れるのは「数値」かつ「次元のないコンテキスト」の行。
 セグメント別・株主別などの内訳コンテキストは企業間で比較できないため落とす。
+提出会社独自の拡張要素は残す (トヨタの売上高のように拡張要素にしか無い数値があるため)。
 
 同じ要素が本表と注記の両方でタグ付けされるため CSV には同一キーの行が複数現れる。
 (要素ID, コンテキストID) で一意化し、値が食い違う場合は先勝ちにして警告する。
@@ -85,12 +86,12 @@ def parse_zip(path: Path, doc_id: str, warn: bool = True) -> tuple[pd.DataFrame,
 
             for r in reader:
                 element_id = (r[COLUMN_ELEMENT] or "").strip()
+                if not element_id or ":" not in element_id:
+                    continue
                 if element_id == ACCOUNTING_STANDARD_ELEMENT:
                     accounting_standard = config.ACCOUNTING_STANDARDS.get(
                         (r[COLUMN_VALUE] or "").strip()
                     )
-                if element_id.split(":")[0] not in config.STANDARD_TAXONOMY_PREFIXES:
-                    continue
                 value = parse_value(r[COLUMN_VALUE])
                 if value is None:
                     continue

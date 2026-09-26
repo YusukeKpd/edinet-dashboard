@@ -48,6 +48,9 @@ uv run python -m etl.fetch_docs --limit 200
 # 4. パース: ZIP -> facts（縦持ち生データ）
 uv run python -m etl.parse_csv
 
+# 5. 整形: facts -> financials（横持ち）。APIは叩かない
+uv run python -m etl.build_financials --coverage
+
 # ETL 全体のエントリポイント（フェーズ2で実装）
 uv run python -m etl.run --help
 ```
@@ -58,11 +61,33 @@ uv run python -m etl.run --help
 | `fetch_doc_list` | 書類一覧API `type=2` | `documents` |
 | `fetch_docs` | 書類取得API `type=5` | `data/raw/*.zip` + `documents.downloaded` |
 | `parse_csv` | `data/raw/*.zip` | `facts` + `documents.parsed` / `accounting_standard` |
+| `build_financials` | `facts` + `config/mapping.yaml` | `financials` |
 
 `parse_csv` が `facts` に入れるのは **標準タクソノミ（jpcrp_cor / jppfs_cor / jpigp_cor / jpdei_cor）**
 かつ **数値** かつ **次元のないコンテキスト** の行だけ。セグメント別・株主別などの内訳と、
 提出会社独自の拡張要素は企業間で比較できないため捨てている。
 パーサを直したときは `--reparse` で API を叩かずに `data/raw` の ZIP から作り直す。
+
+`build_financials` は `facts` からの導出物なので毎回 `financials` を全置換する。
+`mapping.yaml` を変えたら流し直すだけでよく、EDINET には一切アクセスしない。
+`--coverage` を付けると項目充足率が出る。マッピングを育てるときはこれを見ながら進める。
+
+### 勘定科目マッピングの注意点
+
+実装しながら分かった、間違えやすいところ:
+
+- **同名の要素が会計基準によって別物を指す。** `EquityToAssetRatio...SummaryOfBusinessResults`
+  は日本基準では自己資本比率(`pure`)だが、IFRS では1株当たり親会社所有者帰属持分
+  (`JPYPerShares`)。`mapping.yaml` の `_units` で単位を検証して弾いている。
+- **金融業の最上段は経常収益。** `OrdinaryIncome...`(経常収益) と
+  `OrdinaryIncomeLoss...`(経常利益) は別物。
+- **自己資本には直接の要素が無い。** 日本基準では「純資産 − 非支配株主持分 − 新株予約権」で
+  算出する（`_derived`）。`jppfs_cor:ShareholdersEquity` は株主資本であって自己資本ではない。
+- **提出会社独自の拡張要素にしか無い数値がある。** トヨタの売上高と有利子負債がそれ。
+  `"*:LocalName"` 形式で局所名だけ一致させて拾う。
+- **連結行に単体の値を混ぜない。** フォールバックしてよいのは提出会社の情報である
+  配当と発行済株式数だけ（`_fallback_to_separate`）。混ぜると IFRS で営業利益を表示しない
+  会社（日立・三菱商事）の連結行に、日本基準の単体営業利益が入ってしまう。
 
 ## Secrets
 
@@ -104,7 +129,7 @@ gh workflow run update.yml --repo YusukeKpd/edinet-dashboard
   - [x] ステップ3: `fetch_code_list`（companies）
   - [x] ステップ4: `fetch_doc_list`（documents）
   - [x] ステップ5: `fetch_docs` + `parse_csv`（facts）
-  - [ ] ステップ6: `mapping.yaml` + `build_financials`（主要10社の数値を有報と照合）
+  - [x] ステップ6: `mapping.yaml` + `build_financials`（主要12社の数値を有報と照合）
   - [ ] ステップ7: `build_metrics`
   - [ ] ステップ8: 過去5年バックフィル
 - [ ] フェーズ2: Releases 入出力 + Actions ワークフロー

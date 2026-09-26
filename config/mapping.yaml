@@ -4,37 +4,65 @@
 # 優先度: (1)「主要な経営指標等の推移」要素 (*SummaryOfBusinessResults / IFRS版含む)
 #         (2) 本表要素 (jppfs_cor:* = 日本基準 / jpigp_cor:* = IFRS)
 #
-# コンテキスト: CurrentYearDuration / CurrentYearInstant / Prior{n}Year*
-#               _NonConsolidatedMember 付きは単体。連結優先、なければ単体。
+# 要素IDの書き方:
+#   jppfs_cor:NetSales   prefix と局所名の完全一致
+#   "*:TotalNetRevenuesIFRS"  局所名だけで一致。提出会社独自の拡張要素を拾うため
+#                             (トヨタの売上高のように拡張要素にしか無い数値がある)
 #
-# !! 注意 !!
-# ここに書かれた要素IDは初期の候補であり、実データでの検証はフェーズ1 ステップ6
-# (build_financials + tests/test_financials.py) で行う。項目充足率レポートを見ながら
-# 候補を段階的に追加していくこと。変更したら必ず `uv run pytest tests/test_financials.py`。
+# コンテキスト: 年次は CurrentYearDuration / CurrentYearInstant、半期は CurrentYTDDuration /
+#               CurrentQuarterInstant。_NonConsolidatedMember 付きは単体。
+#               連結行には連結の値だけを入れる。単体へのフォールバックは
+#               _fallback_to_separate に挙げた項目 (配当・発行済株式数) に限る。
+#
+# !! 単位で必ず検証すること (_units 参照) !!
+# EquityToAssetRatio...SummaryOfBusinessResults は日本基準では自己資本比率(pure)だが、
+# IFRS では1株当たり親会社所有者帰属持分(JPYPerShares) として使われている。
+# 同名の要素が別物を指すため、単位が一致しない値は採用しない。
+#
+# 変更したら必ず `uv run pytest tests/test_financials.py`。
 
 # ---------------- 損益計算書 ----------------
 revenue:
   - jpcrp_cor:NetSalesSummaryOfBusinessResults
   - jpcrp_cor:RevenueIFRSSummaryOfBusinessResults
-  - jpcrp_cor:OperatingRevenue1SummaryOfBusinessResults
+  - jpcrp_cor:RevenuesUSGAAPSummaryOfBusinessResults
   - jpcrp_cor:TotalNetRevenuesSummaryOfBusinessResults
+  # 拡張要素にしか売上高が無い会社 (トヨタ: OperatingRevenuesIFRSKeyFinancialData 等)
+  - "*:OperatingRevenuesIFRSKeyFinancialData"
+  - "*:SalesAndFinancialServicesRevenueIFRSKeyFinancialData"
+  - "*:RevenuesSummaryOfBusinessResults"
+  - "*:TotalNetRevenuesIFRS"
+  - "*:SalesRevenuesIFRS"
   - jppfs_cor:NetSales
-  - jppfs_cor:OperatingRevenue
   - jpigp_cor:RevenueIFRS
+  - jpigp_cor:Revenue2IFRS
+  - jpigp_cor:NetSalesIFRS
+  - jpcrp_cor:OperatingRevenue1SummaryOfBusinessResults
+  - jppfs_cor:OperatingRevenue
+  - jppfs_cor:OperatingRevenue1
+  # 金融業の最上段は経常収益。OrdinaryIncomeLoss(経常利益)とは別物なので混同しないこと
+  - jpcrp_cor:OrdinaryIncomeSummaryOfBusinessResults
+  - jppfs_cor:OrdinaryIncomeBNK
+  - jppfs_cor:OrdinaryIncomeINS
 
 operating_income:
   - jpcrp_cor:OperatingIncomeSummaryOfBusinessResults
+  - "*:OperatingProfitLossIFRSKeyFinancialData"
   - jppfs_cor:OperatingIncome
   - jpigp_cor:OperatingProfitLossIFRS
+  - jpigp_cor:OperatingIncomeIFRS
 
 ordinary_income:
   - jpcrp_cor:OrdinaryIncomeLossSummaryOfBusinessResults
   - jppfs_cor:OrdinaryIncome
   # IFRS には経常利益の概念が無い -> 税引前利益で代替
+  - jpcrp_cor:ProfitLossBeforeTaxIFRSSummaryOfBusinessResults
   - jpigp_cor:ProfitLossBeforeTaxIFRS
 
 net_income:
   - jpcrp_cor:ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults
+  - jpcrp_cor:ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults
+  - jpcrp_cor:ProfitLossAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults
   - jpcrp_cor:NetIncomeLossSummaryOfBusinessResults
   - jppfs_cor:ProfitLossAttributableToOwnersOfParent
   - jpigp_cor:ProfitLossAttributableToOwnersOfParentIFRS
@@ -42,63 +70,102 @@ net_income:
 # ---------------- 貸借対照表 ----------------
 total_assets:
   - jpcrp_cor:TotalAssetsSummaryOfBusinessResults
+  - jpcrp_cor:TotalAssetsIFRSSummaryOfBusinessResults
+  - jpcrp_cor:TotalAssetsUSGAAPSummaryOfBusinessResults
   - jppfs_cor:Assets
+  - jpigp_cor:AssetsIFRS
   - jpigp_cor:TotalAssetsIFRS
 
+# 純資産 (IFRS の資本合計を含む。非支配株主持分を含んだ総額)
 net_assets:
   - jpcrp_cor:NetAssetsSummaryOfBusinessResults
+  - "*:TotalEquityIFRSSummaryOfBusinessResults"
   - jppfs_cor:NetAssets
+  - jpigp_cor:EquityIFRS
   - jpigp_cor:TotalEquityIFRS
 
-# 自己資本 (= 純資産 - 非支配株主持分 - 新株予約権)。ROE・自己資本比率・D/Eの分母
+# 自己資本 (ROE・自己資本比率・D/Eの分母)。
+# 日本基準には直接の要素が無い。jppfs_cor:ShareholdersEquity は「株主資本」であって
+# その他の包括利益累計額を含まないため自己資本にはならない (主要12社で有報の自己資本比率と
+# 不一致になることを確認済み)。見つからない場合は _derived の規則で算出する。
 equity:
-  - jppfs_cor:ShareholdersEquity
+  - jpcrp_cor:EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults
+  - jpcrp_cor:EquityAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults
   - jpigp_cor:EquityAttributableToOwnersOfParentIFRS
 
 cash:
   - jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults
+  - jpcrp_cor:CashAndCashEquivalentsIFRSSummaryOfBusinessResults
+  - jpcrp_cor:CashAndCashEquivalentsUSGAAPSummaryOfBusinessResults
   - jppfs_cor:CashAndCashEquivalents
   - jpigp_cor:CashAndCashEquivalentsIFRS
 
-# 有利子負債: 単一要素が存在しないため候補の「合計」を取る (_sum_items を参照)
+# 有利子負債には単一の標準要素が無いので、内訳を足し合わせる。
+# 候補はグループ（入れ子のリスト）で書く。値が見つかった最初のグループを採用し、
+# その中身を合計する。合計値を直接開示している会社（トヨタ）を先頭に置くことで、
+# 合計とその内訳を二重に計上しない。
 interest_bearing_debt:
-  - jppfs_cor:ShortTermLoansPayable
-  - jppfs_cor:CurrentPortionOfLongTermLoansPayable
-  - jppfs_cor:CurrentPortionOfBonds
-  - jppfs_cor:CommercialPapersLiabilities
-  - jppfs_cor:BondsPayable
-  - jppfs_cor:LongTermLoansPayable
-  - jppfs_cor:LeaseObligationsCL
-  - jppfs_cor:LeaseObligationsNCL
+  # 有利子負債の合計を開示している会社
+  - - "*:InterestBearingLiabilitiesCLIFRS"
+    - "*:InterestBearingLiabilitiesNCLIFRS"
+  # IFRS の内訳
+  - - jpigp_cor:BondsAndBorrowingsCLIFRS
+    - jpigp_cor:BondsAndBorrowingsNCLIFRS
+    - jpigp_cor:BorrowingsCLIFRS
+    - jpigp_cor:BorrowingsNCLIFRS
+    - jpigp_cor:LeaseLiabilitiesCLIFRS
+    - jpigp_cor:LeaseLiabilitiesNCLIFRS
+    - "*:ShortTermDebtCLIFRS"
+    - "*:CurrentPortionOfLongTermDebtCLIFRS"
+    - "*:LongTermDebtNCLIFRS"
+    - "*:LongTermDebt2NCLIFRS"
+    - "*:LongTermDebtIFRSNCLIFRS"
+  # 日本基準の内訳
+  - - jppfs_cor:ShortTermLoansPayable
+    - jppfs_cor:CurrentPortionOfLongTermLoansPayable
+    - jppfs_cor:CurrentPortionOfBonds
+    - jppfs_cor:ShortTermBondsPayable
+    - jppfs_cor:CommercialPapersLiabilities
+    - jppfs_cor:BondsPayable
+    - jppfs_cor:LongTermLoansPayable
+    - jppfs_cor:LeaseObligationsCL
+    - jppfs_cor:LeaseObligationsNCL
 
 # ---------------- キャッシュフロー ----------------
 cfo:
   - jpcrp_cor:NetCashProvidedByUsedInOperatingActivitiesSummaryOfBusinessResults
+  - jpcrp_cor:CashFlowsFromUsedInOperatingActivitiesIFRSSummaryOfBusinessResults
   - jppfs_cor:NetCashProvidedByUsedInOperatingActivities
   - jpigp_cor:NetCashProvidedByUsedInOperatingActivitiesIFRS
 
 cfi:
   - jpcrp_cor:NetCashProvidedByUsedInInvestingActivitiesSummaryOfBusinessResults
+  - jpcrp_cor:CashFlowsFromUsedInInvestingActivitiesIFRSSummaryOfBusinessResults
   - jppfs_cor:NetCashProvidedByUsedInInvestmentActivities
   - jpigp_cor:NetCashProvidedByUsedInInvestingActivitiesIFRS
 
 cff:
   - jpcrp_cor:NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults
+  - jpcrp_cor:CashFlowsFromUsedInFinancingActivitiesIFRSSummaryOfBusinessResults
   - jppfs_cor:NetCashProvidedByUsedInFinancingActivities
   - jpigp_cor:NetCashProvidedByUsedInFinancingActivitiesIFRS
 
 # ---------------- 1株当たり・その他 ----------------
-# 正しい要素名は BasicEarningsLossPerShare (Loss 入り)。
-# Loss 無しの要素IDは実データに存在せず充足率0%だったため差し替えた (フェーズ1 ステップ5)
+# 正しい要素名は BasicEarningsLossPerShare (Loss 入り)
 eps:
   - jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults
   - jpcrp_cor:BasicEarningsLossPerShareIFRSSummaryOfBusinessResults
   - jpcrp_cor:BasicEarningsLossPerShareUSGAAPSummaryOfBusinessResults
+  - "*:BasicEarningsPerShareSummaryOfBusinessResult"
   - jpigp_cor:BasicEarningsLossPerShareIFRS
   - jppfs_cor:BasicEarningsLossPerShare
 
+# IFRS では EquityToAssetRatioIFRS... が1株当たり親会社所有者帰属持分として使われている。
+# 単位 (JPYPerShares) の検証があるため、日本基準の自己資本比率(pure)を誤って拾うことはない
 bps:
   - jpcrp_cor:NetAssetsPerShareSummaryOfBusinessResults
+  - jpcrp_cor:EquityToAssetRatioIFRSSummaryOfBusinessResults
+  - jpcrp_cor:EquityAttributableToOwnersOfParentPerShareUSGAAPSummaryOfBusinessResults
   - jppfs_cor:NetAssetsPerShare
 
 dividend_per_share:
@@ -106,17 +173,65 @@ dividend_per_share:
 
 employees:
   - jpcrp_cor:NumberOfEmployees
+  - "*:NumberOfEmployeesIFRSSummaryOfBusinessResults"
 
 shares_outstanding:
+  - jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc
   - jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults
   - jppfs_cor:NumberOfIssuedSharesAsOfBalanceSheetDate
 
 # ---------------- 取り扱いの指定 ----------------
-# 先頭一致で1つ採用するのではなく、見つかった候補すべての合計を採用する項目
-_sum_items:
-  - interest_bearing_debt
+# 各項目が取るべき単位 (ユニットID)。一致しない値は採用しない。
+# 同名の要素が会計基準によって別物を指すことがあるため、単位が最後の砦になる。
+_units:
+  revenue: JPY
+  operating_income: JPY
+  ordinary_income: JPY
+  net_income: JPY
+  total_assets: JPY
+  net_assets: JPY
+  equity: JPY
+  interest_bearing_debt: JPY
+  cash: JPY
+  cfo: JPY
+  cfi: JPY
+  cff: JPY
+  eps: JPYPerShares
+  bps: JPYPerShares
+  dividend_per_share: JPYPerShares
+  employees: pure
+  shares_outstanding: shares
 
-# 金融業 (銀行・保険・証券) では欠損を許容する項目 (仕様書 §4.2)
+# 連結で見つからないときに単体（提出会社）へフォールバックしてよい項目。
+# 配当と発行済株式数はそもそも提出会社の情報なので、連結の表には現れない。
+# これ以外は連結行に単体の数値を混ぜない。混ぜると、IFRSで営業利益を表示しない会社
+# （日立・三菱商事）の連結行に日本基準の単体営業利益が入ってしまう。
+_fallback_to_separate:
+  - dividend_per_share
+  - shares_outstanding
+
+# 直接の要素が無い項目を他の項目から計算する。
+# 自己資本 = 純資産 - 非支配株主持分 - 新株予約権。
+# 主要12社で有報の自己資本比率と小数4桁まで一致することを確認済み。
+_derived:
+  equity:
+    base: net_assets
+    subtract:
+      - non_controlling_interests
+      - subscription_rights
+
+# _derived から参照する補助項目。financials の列にはならない
+_components:
+  non_controlling_interests:
+    - jppfs_cor:NonControllingInterests
+    - jpigp_cor:NonControllingInterestsIFRS
+  subscription_rights:
+    - jppfs_cor:SubscriptionRightsToShares
+
+# 欠損を許容する項目。埋まっていなくても異常ではない
+# - 金融業(銀行・保険・証券)は営業利益を計上しない
+# - IFRS採用企業には営業利益を表示しない会社がある(日立・三菱商事など)
+# - 金融業の有利子負債は預金等と区別できないため算出しない
 _allow_missing_for_financials:
   - operating_income
-  - revenue
+  - interest_bearing_debt

@@ -53,9 +53,19 @@ CSV_SEP = "\t"
 # ZIP 内で財務データが入っているディレクトリ (監査報告書 jpaud-* は除外する)
 CSV_DIR_IN_ZIP = "XBRL_TO_CSV/"
 
-# facts に保存する標準タクソノミの prefix (仕様書 §4.1「標準タクソノミ要素のみ保存」)。
-# 提出会社独自の拡張要素 (例: jpcrp030000-asr_E23973-000:...) は企業間で比較できないため捨てる
+# 標準タクソノミの prefix。facts にはこれ以外 (提出会社独自の拡張要素) も保存する。
+#
+# 仕様書 §4.1 は「標準タクソノミ要素のみ保存」としているが、トヨタ自動車の売上高
+# (48兆367億円) のように主要な数値が拡張要素にしか存在しない会社がある。
+# 拡張要素は全体の約7%と軽く、局所名は標準に準じた形 (TotalNetRevenuesIFRS 等) なので、
+# mapping.yaml の "*:LocalName" 形式で拾えるようにするため保存する。
+# この定数は充足率レポートで標準/拡張を区別するために残す。
 STANDARD_TAXONOMY_PREFIXES = ("jpcrp_cor", "jppfs_cor", "jpigp_cor", "jpdei_cor")
+
+# financials を作るときに見る「当期」のコンテキスト。
+# 年次は CurrentYearDuration / CurrentYearInstant、半期は CurrentYTDDuration /
+# CurrentQuarterInstant。FilingDateInstant (提出日時点) は当期の実績ではないので除く。
+CURRENT_PERIOD_PREFIX = "Current"
 
 # コンテキストIDに付くと単体を意味するサフィックス (仕様書 §4.2)
 NONCONSOLIDATED_MEMBER = "_NonConsolidatedMember"
