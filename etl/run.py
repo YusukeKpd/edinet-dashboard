@@ -21,7 +21,15 @@ import time
 import uuid
 from datetime import UTC, date, datetime
 
-from etl import build_financials, build_metrics, config, db, fetch_code_list, fetch_docs
+from etl import (
+    build_financials,
+    build_metrics,
+    config,
+    db,
+    fetch_code_list,
+    fetch_docs,
+    release_io,
+)
 from etl import fetch_doc_list as fdl
 from etl import parse_csv as pc
 
@@ -94,6 +102,17 @@ def log_run(con, run_id, started_at, date_from, date_to, stats, status, message)
     )
 
 
+def finish(con, args) -> None:
+    """どのモードでも最後に通る後始末。充足率レポート -> Releases へ公開の順。"""
+    if args.dry_run:
+        return
+    if args.monthly_maintenance:
+        print_coverage(con)
+    if args.publish:
+        print("=== Releases へ公開 ===")
+        release_io.publish(con)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="etl.run", description="EDINET財務データ ETL")
     p.add_argument(
@@ -112,11 +131,43 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--monthly-maintenance",
         action="store_true",
-        help="EDINETコードリストの再取込と項目充足率レポート（月初のみ / 仕様書 §7.3）",
+        help="通常の更新に加えて、EDINETコードリストの再取込と項目充足率レポートも行う"
+        "（月初のみ / 仕様書 §7.3）",
     )
     p.add_argument("--dry-run", action="store_true", help="書き込みを行わず処理内容だけ表示する")
     p.add_argument("--db", help="DuckDBのパス（既定 data/edinet.duckdb）")
+    p.add_argument(
+        "--restore",
+        action="store_true",
+        help="実行前に Releases から状態を復元する（Actions用。手元のDBには使わない）",
+    )
+    p.add_argument(
+        "--publish",
+        action="store_true",
+        help="実行後に Parquet を Releases へ公開する（Actions用）",
+    )
     return p
+
+
+def refresh_code_list(con) -> None:
+    """EDINETコードリスト再取込（仕様書 §7.3）。新規上場・廃止・社名変更に追従する。
+
+    取得対象の絞り込み（上場企業のみ）に効くので、書類を取りに行く前に済ませる。
+    companies は financials の材料ではないため、ここでの再構築は要らない。
+    """
+    df = fetch_code_list.parse_code_list(fetch_code_list.download_code_list())
+    db.upsert(con, "companies", df, key=["edinet_code"])
+    print(f"companies: {len(df)}件（上場 {int(df['listed'].sum())}件）")
+
+
+def print_coverage(con) -> None:
+    """項目充足率レポート（仕様書 §7.3）。マッピング漏れを見つけるために出す。"""
+    mapping = build_financials.Mapping.load()
+    financials = con.execute("SELECT * FROM financials").df()
+    print("--- 項目充足率（連結） ---")
+    for r in build_financials.coverage(financials, mapping).itertuples():
+        mark = " (欠損許容)" if r.allow_missing else ""
+        print(f"  {r.item:<22} {r.filled:>6}/{r.total} {r.rate:>5.1f}%{mark}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,21 +175,24 @@ def main(argv: list[str] | None = None) -> int:
     config.ensure_dirs()
     con = db.connect(args.db)
     try:
+        if args.restore and not args.dry_run:
+            print("=== Releases から状態を復元 ===")
+            release_io.restore(con)
+            # 手元に ZIP の無い未パース書類は取得し直す（Actions は毎回まっさらなため）
+            back = fetch_docs.reconcile_missing(con)
+            if back:
+                print(f"ZIP の無い未パース書類 {back}件 を取得対象に戻しました")
+
         if args.monthly_maintenance:
-            print("=== 月次メンテナンス: コードリスト再取込 ===")
+            print("=== 月次メンテナンス: コードリスト再取込（仕様書 §7.3）===")
             if not args.dry_run:
-                df = fetch_code_list.parse_code_list(fetch_code_list.download_code_list())
-                db.upsert(con, "companies", df, key=["edinet_code"])
-                print(f"companies: {len(df)}件（上場 {int(df['listed'].sum())}件）")
-            print("=== financials / metrics を再構築 ===")
-            if not args.dry_run:
-                rebuild(con)
-            return 0
+                refresh_code_list(con)
 
         if args.rebuild:
             print("=== facts から financials / metrics を再構築（APIは叩かない）===")
             if not args.dry_run:
                 rebuild(con)
+            finish(con, args)
             return 0
 
         run_id = uuid.uuid4().hex
@@ -168,12 +222,15 @@ def main(argv: list[str] | None = None) -> int:
         if not args.dry_run:
             rebuild(con)
             log_run(con, run_id, started_at, date_from, date_to, stats, "success", "")
+
         elapsed = time.monotonic() - t0
         print(
             f"完了（{elapsed:.0f}秒）: 取得 {stats['docs_fetched']}件 / "
             f"DL {stats['docs_downloaded']}件 / パース {stats['docs_parsed']}件 / "
             f"失敗 {stats['docs_failed']}件"
         )
+        # etl_log を書いてから公開する。Streamlit の「最終更新」はこのログを見る
+        finish(con, args)
         return 0
     finally:
         con.close()

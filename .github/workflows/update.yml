@@ -1,5 +1,8 @@
 # EDINET財務データの定期更新（仕様書 §7.1）
 # 重い処理はすべてここで実行する。Streamlit 側では ETL を実行しない。
+#
+# 状態（DuckDB）は毎回まっさらな環境に作り直される。ETL は Releases(data-latest) の
+# Parquet から復元して差分だけを取り、終わったら Releases を上書きする。
 name: update
 
 on:
@@ -47,48 +50,39 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
-      # Secrets.EDINET_API_KEY が Actions から届くかの疎通確認。
-      # キーが無効でもジョブは落とさず警告に留める（ETL本体はフェーズ2で実装するため）。
-      - name: Check EDINET API key
-        env:
-          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
-        run: |
-          uv run python - <<'EOF'
-          import os, sys, requests
-          key = os.getenv("EDINET_API_KEY", "")
-          if not key:
-              print("::warning::EDINET_API_KEY が未設定です。")
-              sys.exit(0)
-          r = requests.get(
-              "https://api.edinet-fsa.go.jp/api/v2/documents.json",
-              params={"date": "2026-09-25", "type": "2", "Subscription-Key": key},
-              timeout=30,
-          )
-          body = r.json()
-          if body.get("StatusCode"):
-              print(f"::warning::EDINET がキーを拒否しました: {body.get('message')}")
-          else:
-              n = body.get("metadata", {}).get("resultset", {}).get("count")
-              print(f"EDINET 疎通OK: {n}件")
-          EOF
-
-      # TODO(フェーズ2 ステップ10): 下のプレースホルダを実際の ETL 実行に置き換える
-      #   手順: Releasesから前回Parquet取得 -> 差分取得 -> パース
-      #         -> financials/metrics再計算 -> Releases上書き -> etl_log追記
-      #   env:
-      #     EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #     REPO: ${{ github.repository }}
-      #   run: |
-      #     uv run python -m etl.run \
-      #       ${{ inputs.rebuild && '--rebuild' || '' }} \
-      #       ${{ inputs.backfill && '--backfill' || '' }} \
-      #       ${{ inputs.date_from && format('--date-from {0}', inputs.date_from) || '' }} \
-      #       ${{ inputs.date_to && format('--date-to {0}', inputs.date_to) || '' }}
-      - name: Run ETL (placeholder)
-        run: |
-          echo "ETL は未実装です（フェーズ2 ステップ10で実装）。"
-          echo "現時点ではワークフローの起動経路の確認のみを行います。"
-
+      # ETL より先に落としておく。壊れたコードでデータを上書きしないため
       - name: Run tests
         run: uv run pytest
+
+      # 週次なので、1〜7日に走る回がその月の初回になる（仕様書 §7.3）
+      - name: Decide whether monthly maintenance runs
+        id: schedule
+        run: |
+          if [ "$(date -u +%d)" -le 07 ]; then
+            echo "monthly=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "monthly=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Releasesから復元 -> 差分取得 -> パース -> 再計算 -> Releases上書き（仕様書 §7.1）。
+      # 状態は Releases にしか無いので、復元と公開は同じ1回の実行で完結させる
+      - name: Run ETL
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MONTHLY: ${{ steps.schedule.outputs.monthly == 'true' && '--monthly-maintenance' || '' }}
+          REBUILD: ${{ inputs.rebuild && '--rebuild' || '' }}
+          BACKFILL: ${{ inputs.backfill && '--backfill' || '' }}
+          DATE_FROM: ${{ inputs.date_from && format('--date-from {0}', inputs.date_from) || '' }}
+          DATE_TO: ${{ inputs.date_to && format('--date-to {0}', inputs.date_to) || '' }}
+        run: |
+          uv run python -m etl.run --restore --publish \
+            $MONTHLY $REBUILD $BACKFILL $DATE_FROM $DATE_TO
+
+      - name: Summarize
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: uv run python -m etl.release_io --status >> "$GITHUB_STEP_SUMMARY"

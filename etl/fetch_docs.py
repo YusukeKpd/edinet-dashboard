@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 
 import duckdb
+import pandas as pd
 
 from etl import config, db
 from etl.edinet_client import EdinetError, EdinetTemporaryError, get_document_zip
@@ -35,6 +36,31 @@ def pending_doc_ids(
 ) -> list[str]:
     sql = PENDING_SQL.format(join=LISTED_JOIN if only_listed else "")
     return [r[0] for r in con.execute(sql, [limit]).fetchall()]
+
+
+def reconcile_missing(con: duckdb.DuckDBPyConnection) -> int:
+    """downloaded=TRUE なのに ZIP が手元に無い未パース書類を、未取得に戻す。
+
+    Actions は毎回まっさらな環境で動く。パース済みの書類の中身は facts として
+    Releases から復元されるので ZIP は要らないが、未パースのまま downloaded=TRUE に
+    なっている書類（前回の実行が取得とパースの間で落ちた場合など）は ZIP が無いと
+    先へ進めないので、取得し直す対象に戻す。
+    """
+    rows = con.execute(
+        "SELECT doc_id FROM documents "
+        "WHERE coalesce(downloaded, FALSE) AND NOT coalesce(parsed, FALSE)"
+    ).fetchall()
+    missing = [r[0] for r in rows if not (config.RAW_DIR / f"{r[0]}.zip").exists()]
+    if missing:
+        con.register("_missing_zips", pd.DataFrame({"doc_id": missing}))
+        try:
+            con.execute(
+                "UPDATE documents SET downloaded = FALSE "
+                "WHERE doc_id IN (SELECT doc_id FROM _missing_zips)"
+            )
+        finally:
+            con.unregister("_missing_zips")
+    return len(missing)
 
 
 def download(con: duckdb.DuckDBPyConnection, doc_id: str) -> str:

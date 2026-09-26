@@ -53,10 +53,49 @@ uv run python -m etl.build_financials --coverage
 
 # 6. 指標: financials -> metrics。APIは叩かない
 uv run python -m etl.build_metrics --report
-
-# ETL 全体のエントリポイント（フェーズ2で実装）
-uv run python -m etl.run --help
 ```
+
+上の 2〜6 をまとめて行うのが `etl.run`。通常はこちらを使う。
+
+```bash
+# 差分更新（前回の続きから今日まで）
+uv run python -m etl.run
+
+# mapping.yaml を変えた後の作り直し（APIは叩かない）
+uv run python -m etl.run --rebuild
+
+# 過去分の取り込み。範囲を区切って何回かに分けて流す
+uv run python -m etl.run --backfill --date-from 2020-01-01 --date-to 2020-12-31
+
+# 何が起きるかだけ見る
+uv run python -m etl.run --dry-run
+```
+
+### データの配布（GitHub Releases）
+
+データの正はリポジトリではなく **Releases のタグ `data-latest`** に添付した Parquet。
+Streamlit Cloud のファイルシステムは揮発するため、リポジトリにデータを置かない。
+
+```bash
+uv run python -m etl.release_io --status     # 今 Releases にある資産を一覧
+uv run python -m etl.release_io --publish    # ローカルDB -> Releases（要 GITHUB_TOKEN）
+uv run python -m etl.release_io --restore    # Releases -> 空のローカルDB
+```
+
+| ファイル | サイズ | 読む人 |
+|---|---|---|
+| `metrics.parquet` | 12MB | Streamlit（これだけあれば画面は出る） |
+| `companies.parquet` | 0.2MB | Streamlit |
+| `etl_log.parquet` | 1KB | Streamlit（最終更新日）/ ETL（差分の起点） |
+| `documents.parquet` | 0.7MB | ETL（差分判定） |
+| `facts.parquet` | 81MB | ETL（`--rebuild` の材料） |
+
+Actions は毎回まっさらな環境で動くので、ETL は `--restore` で状態を復元してから差分を取り、
+`--publish` で上書きする。`data/raw` の ZIP（27,000件）は配らない。パース済みの書類の中身は
+`facts.parquet` に入っているため ZIP は要らず、未パースのまま残っている書類だけ取得し直す。
+
+`--restore` は中身のあるテーブルには書き込まない。手元のDBを Releases の内容で
+置き換えたいときだけ `--force` を付ける。
 
 | ステップ | 入力 | 出力 |
 |---|---|---|
@@ -83,21 +122,25 @@ uv run python -m etl.run --help
 （追加のAPI呼び出しは不要）。各行の `source_period` に `Current` / `Prior1`.. が入るので、
 どの期の欄から取った値かを後から追える。
 
-ただし経営指標表に載っている項目しか遡れない。実測（84社・連結）:
+ただし経営指標表に載っている項目しか遡れない。**営業利益と有利子負債は本表にしか
+出てこない**ので、1通の有報からは当期・前期の2期分しか取れない。
 
-| 項目 | FY-4 〜 FY-2 | FY-1・当期 |
-|---|---|---|
-| 売上高・総資産・自己資本・純利益・EPS・BPS・CF・従業員数 | 100% | 100% |
-| 経常利益 | 97% | 96% |
-| **営業利益** | **1%** | 88% |
-| **有利子負債** | **0%** | 83% |
+これを埋めるのが過去分のバックフィル。過去の有報そのものを取ってくれば、その年が
+「当期」になるので本表の値が入る。当期データは前期欄より優先されるため、後から
+バックフィルすれば自動的に上書きされる。
 
-営業利益と有利子負債は当期・前期しか無い（本表にしか出てこないため）。したがって
-**営業利益率・営業利益成長率・D/Eレシオ・ネットキャッシュは直近2期のみ**で、
-売上・利益・ROE・ROA・自己資本比率は5期そろう。
-5年CAGR は6期分必要なので、有報1通では算出できない。
-いずれも過去の有報そのものを取ってくるバックフィル（ステップ8）で解消する。
-当期データは前期欄より強いので、バックフィルすれば自動的に置き換わる。
+2020-01-01 以降の有報を取り込んだ後の実測（連結・年次、3,284社 / 67,344行）:
+
+| 年度 | 行数 | 営業利益 | 有利子負債 |
+|---|---|---|---|
+| 2015〜2017 | 各 2,300〜2,800 | 0% | 0% |
+| 2018 | 2,851 | 80.3% | 73.7% |
+| 2019〜2023 | 各 2,900〜3,200 | 93〜95% | 84〜87% |
+| 2024 | 3,032 | 96.0% | 88.4% |
+
+2015〜2017年度は各有報の経営指標表から作られた行なので、営業利益・有利子負債は入らない。
+そこまで遡るには `--backfill --date-from 2016-01-01` のようにさらに古い書類を取る。
+売上・純利益・総資産・自己資本・EPS・BPS・ROE などは 2015年度から入っている。
 
 ### 勘定科目マッピングの注意点
 
@@ -152,12 +195,14 @@ gh workflow run update.yml --repo YusukeKpd/edinet-dashboard
 ## 開発状況
 
 - [x] フェーズ0: リポジトリ雛形
-- [ ] フェーズ1: ETL
+- [x] フェーズ1: ETL
   - [x] ステップ3: `fetch_code_list`（companies）
   - [x] ステップ4: `fetch_doc_list`（documents）
   - [x] ステップ5: `fetch_docs` + `parse_csv`（facts）
   - [x] ステップ6: `mapping.yaml` + `build_financials`（主要12社の数値を有報と照合）
   - [x] ステップ7: `build_metrics`（ROEが有報の開示値と一致）
-  - [ ] ステップ8: 過去5年バックフィル
-- [ ] フェーズ2: Releases 入出力 + Actions ワークフロー
+  - [x] ステップ8: 過去分バックフィル（2020-01-01 以降。3,284社 / 67,344行）
+- [x] フェーズ2: Releases 入出力 + Actions ワークフロー
+  - [x] ステップ9: `release_io`（Releases との Parquet 入出力）
+  - [x] ステップ10: `update.yml`（復元 -> 差分取得 -> 再計算 -> 公開）
 - [ ] フェーズ3: Streamlit 各ページ + デプロイ

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import duckdb
@@ -52,6 +53,11 @@ CREATE TABLE IF NOT EXISTS etl_log (            -- 実行ログ
   status TEXT, message TEXT
 );
 """
+
+
+# SCHEMA_SQL が主キー付きで定義しているテーブル。Releases からの復元時、これらは
+# 作り直さず INSERT する（作り直すと主キーが消え、upsert の ON CONFLICT が使えなくなる）
+SCHEMA_TABLES = frozenset(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA_SQL))
 
 
 # 既存DBに後から足した列。CREATE TABLE IF NOT EXISTS では追加されないため個別に流す
