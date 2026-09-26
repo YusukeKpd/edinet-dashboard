@@ -228,14 +228,22 @@ def fixture_con() -> duckdb.DuckDBPyConnection:
     con.close()
 
 
+FISCAL_YEAR = 2024  # 2025年3月期
+
+
 @pytest.fixture(scope="module")
-def built(fixture_con, mapping):
-    """フィクスチャから作った連結の financials を証券コード引きにしたもの。"""
+def financials(fixture_con, mapping):
+    """フィクスチャから作った financials に証券コードを付けたもの。"""
     df = build_financials.build(fixture_con, mapping)
-    codes = fixture_con.execute("SELECT edinet_code, sec_code FROM companies").fetchall()
-    by_edinet = dict(codes)
-    consolidated = df[df["consolidated"]]
-    return {by_edinet[r["edinet_code"]]: r for _, r in consolidated.iterrows()}
+    by_edinet = dict(fixture_con.execute("SELECT edinet_code, sec_code FROM companies").fetchall())
+    return df.assign(sec_code=df["edinet_code"].map(by_edinet))
+
+
+@pytest.fixture(scope="module")
+def built(financials):
+    """当期（2025年3月期）の連結行を証券コード引きにしたもの。"""
+    current = financials[financials["consolidated"] & financials["fiscal_year"].eq(FISCAL_YEAR)]
+    return {r["sec_code"]: r for _, r in current.iterrows()}
 
 
 # ---------------------------------------------------------- 有報との照合（完了条件）
@@ -327,9 +335,164 @@ def test_separate_only_items_fall_back(built, mapping):
 def test_period_and_fiscal_year(built):
     for sec_code in MAJOR_COMPANIES:
         row = built[sec_code]
-        assert row["fiscal_year"] == 2024
+        assert row["fiscal_year"] == FISCAL_YEAR
         assert row["period_months"] == 12
         assert row["doc_type"] == "annual"
+        assert row["source_period"] == "Current"
+
+
+# ---------------------------------------------------------- 複数年度
+
+
+# 有報「主要な経営指標等の推移」の売上高（百万円）。1通の有報に5年分入っている
+REVENUE_HISTORY = {
+    "4063": {  # 信越化学工業
+        2020: 1_496_906,
+        2021: 2_074_428,
+        2022: 2_808_824,
+        2023: 2_414_937,
+        2024: 2_561_249,
+    },
+    "7203": {  # トヨタ自動車
+        2020: 27_214_594,
+        2021: 31_379_507,
+        2022: 37_154_298,
+        2023: 45_095_325,
+        2024: 48_036_704,
+    },
+}
+
+
+def test_five_fiscal_years_are_built(financials):
+    """有報1通から5年分の行が作られること（Prior{n}Year コンテキスト）。"""
+    consolidated = financials[financials["consolidated"]]
+    per_company = consolidated.groupby("sec_code")["fiscal_year"].nunique()
+    assert set(per_company) == {5}, f"5年そろわない会社がある: {per_company.to_dict()}"
+    assert set(consolidated["fiscal_year"]) == {2020, 2021, 2022, 2023, 2024}
+
+
+@pytest.mark.parametrize("sec_code", sorted(REVENUE_HISTORY))
+def test_revenue_history_matches_securities_report(financials, sec_code):
+    """過去年度の売上高が有報の経営指標表と一致すること。"""
+    rows = financials[financials["consolidated"] & financials["sec_code"].eq(sec_code)]
+    actual = {int(r["fiscal_year"]): r["revenue"] / MILLION for _, r in rows.iterrows()}
+    for year, expected in REVENUE_HISTORY[sec_code].items():
+        assert actual[year] == pytest.approx(expected, abs=0.5), f"{sec_code} FY{year}"
+
+
+def test_prior_rows_record_their_source(financials):
+    """どの期の欄から取った値かが分かること。バックフィルで置き換える判断に使う。"""
+    rows = financials[financials["consolidated"] & financials["sec_code"].eq("4063")]
+    by_year = {int(r["fiscal_year"]): r for _, r in rows.iterrows()}
+    assert by_year[2024]["source_period"] == "Current"
+    assert by_year[2020]["source_period"] == "Prior4"
+    # 過去年度は決算期間が書類に無いので通常決算とみなす
+    assert by_year[2020]["period_months"] == 12
+    assert pd.Timestamp(by_year[2020]["period_end"]) == pd.Timestamp("2021-03-31")
+
+
+def _synthetic_db(facts: list[tuple], documents: list[tuple]) -> duckdb.DuckDBPyConnection:
+    """build() に食わせる最小のDB。facts は (doc_id, element_id, period, value)。"""
+    con = db.connect(":memory:")
+    con.executemany(
+        "INSERT INTO facts (doc_id, element_id, context_id, unit, value, consolidated, period) "
+        "VALUES (?, ?, ?, 'JPY', ?, TRUE, ?)",
+        [(d, e, p, v, p) for d, e, p, v in facts],
+    )
+    con.executemany(
+        "INSERT INTO documents (doc_id, edinet_code, doc_type_code, period_start, period_end, "
+        "submit_datetime, withdrawn, downloaded, parsed) "
+        "VALUES (?, 'E00001', '120', ?, ?, ?, FALSE, TRUE, TRUE)",
+        documents,
+    )
+    return con
+
+
+def test_current_year_wins_over_prior_year(mapping):
+    """同じ期を2通の書類が持つとき、当期として書かれている方を採る。
+
+    その年の有報の当期データは、翌年の有報の「前期」欄より項目が多い。
+    弱い方（翌年の前期欄）は、埋まっていない項目を埋めるだけにする。
+    """
+    con = _synthetic_db(
+        facts=[
+            # 2024年3月期の有報（当期）。営業利益まである
+            ("S1", "jppfs_cor:NetSales", "CurrentYearDuration", 100.0),
+            ("S1", "jppfs_cor:OperatingIncome", "CurrentYearDuration", 10.0),
+            # 2025年3月期の有報。前期欄は経営指標表しか無く、売上も改訂されている
+            ("S2", "jppfs_cor:NetSales", "CurrentYearDuration", 200.0),
+            ("S2", "jppfs_cor:NetSales", "Prior1YearDuration", 111.0),
+            ("S2", "jppfs_cor:Assets", "Prior1YearInstant", 999.0),
+        ],
+        documents=[
+            ("S1", "2023-04-01", "2024-03-31", "2024-06-20 09:00"),
+            ("S2", "2024-04-01", "2025-03-31", "2025-06-20 09:00"),
+        ],
+    )
+    try:
+        rows = build_financials.build(con, mapping)
+    finally:
+        con.close()
+    by_year = {int(r["fiscal_year"]): r for _, r in rows[rows["consolidated"]].iterrows()}
+
+    assert by_year[2023]["source_period"] == "Current"
+    assert by_year[2023]["source_doc_id"] == "S1"
+    assert by_year[2023]["revenue"] == 100.0  # 前期欄の 111 に上書きされない
+    assert by_year[2023]["operating_income"] == 10.0
+    # 当期の書類に無い項目は前期欄から補う
+    assert by_year[2023]["total_assets"] == 999.0
+    assert by_year[2024]["revenue"] == 200.0
+
+
+def test_correction_report_overwrites_same_period(mapping):
+    """訂正報告書(130)は同じ期の値を上書きし、訂正に無い項目は残す。"""
+    con = _synthetic_db(
+        facts=[
+            ("S1", "jppfs_cor:NetSales", "CurrentYearDuration", 100.0),
+            ("S1", "jppfs_cor:OperatingIncome", "CurrentYearDuration", 10.0),
+            ("S2", "jppfs_cor:NetSales", "CurrentYearDuration", 105.0),
+        ],
+        documents=[
+            ("S1", "2024-04-01", "2025-03-31", "2025-06-20 09:00"),
+            ("S2", "2024-04-01", "2025-03-31", "2025-08-01 09:00"),
+        ],
+    )
+    con.execute("UPDATE documents SET doc_type_code = '130' WHERE doc_id = 'S2'")
+    try:
+        rows = build_financials.build(con, mapping)
+    finally:
+        con.close()
+    row = rows[rows["consolidated"]].iloc[0]
+    assert row["revenue"] == 105.0
+    assert row["operating_income"] == 10.0
+    assert row["source_doc_id"] == "S2"
+
+
+def test_withdrawn_documents_are_excluded(mapping):
+    con = _synthetic_db(
+        facts=[("S1", "jppfs_cor:NetSales", "CurrentYearDuration", 100.0)],
+        documents=[("S1", "2024-04-01", "2025-03-31", "2025-06-20 09:00")],
+    )
+    con.execute("UPDATE documents SET withdrawn = TRUE")
+    try:
+        assert build_financials.build(con, mapping).empty
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize(
+    ("period", "expected"),
+    [
+        ("CurrentYearDuration", 0),
+        ("CurrentYTDDuration", 0),
+        ("Prior1YearInstant", 1),
+        ("Prior4YearDuration", 4),
+        ("Prior1YTDDuration", None),  # 半期の過去は使わない
+        ("FilingDateInstant", None),
+    ],
+)
+def test_period_offset(period, expected):
+    assert build_financials.period_offset(period) == expected
 
 
 # ---------------------------------------------------------- 単位・期の扱い
@@ -340,7 +503,7 @@ def test_unit_guard_rejects_ratio_for_bps(fixture_con, mapping):
 
     単位で弾かないと、日本基準の会社の BPS に 0.8 のような比率が入ってしまう。
     """
-    index = build_financials.load_facts(fixture_con, "S100W0RG")  # 信越化学 (JGAAP)
+    index = build_financials.load_facts(fixture_con, "S100W0RG")[0]  # 信越化学 (JGAAP) の当期
     assert index.lookup("jpcrp_cor:EquityToAssetRatioSummaryOfBusinessResults", "pure", True)
     assert (
         index.lookup("jpcrp_cor:EquityToAssetRatioSummaryOfBusinessResults", "JPYPerShares", True)

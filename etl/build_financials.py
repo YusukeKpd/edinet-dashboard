@@ -7,11 +7,17 @@ API は叩かない。mapping.yaml を変えたらこれを流し直すだけで
 1書類・1基準（連結/単体）で1行。連結行には連結の値だけを入れ、単体へのフォールバックは
 mapping.yaml の _fallback_to_separate に挙げた項目（配当・発行済株式数）に限る。
 訂正報告書(130)は同じ期の行を後から上書きする。取下げ書類は最初から除外する。
+
+有報の「主要な経営指標等の推移」には過去5年分が Prior{n}Year* コンテキストで入っている。
+これも取り込むので、1年分の有報だけでも5年の推移が作れる（仕様書 §4.2）。ただし
+過去年度は経営指標表にある項目しか無い（営業利益や有利子負債は当期と前期のみ）。
+過去の有報そのものを取ってくるバックフィル（ステップ8）で置き換わる。
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
@@ -205,54 +211,97 @@ def load_documents(con: duckdb.DuckDBPyConnection) -> list[tuple]:
     ).fetchall()
 
 
-def load_facts(con: duckdb.DuckDBPyConnection, doc_id: str) -> FactIndex:
-    return FactIndex(
-        con.execute(
-            "SELECT element_id, unit, value, consolidated FROM facts "
-            "WHERE doc_id = ? AND period LIKE ?",
-            [doc_id, config.CURRENT_PERIOD_PREFIX + "%"],
-        ).fetchall()
-    )
+# 当期から何年前かを表すコンテキスト。Prior1YTDDuration など半期の過去は対象外
+# （半期報告書からは当期の半期だけを作る）
+_PRIOR_YEAR_RE = re.compile(r"^Prior(\d+)Year")
+
+
+def period_offset(period: str) -> int | None:
+    """コンテキストが当期から何年前かを返す。対象外のコンテキストは None。"""
+    if period.startswith(config.CURRENT_PERIOD_PREFIX):
+        return 0
+    m = _PRIOR_YEAR_RE.match(period)
+    return int(m.group(1)) if m else None
+
+
+def shift_years(day: date, years: int) -> date:
+    """n年前の同月同日。2月29日は2月28日に寄せる。"""
+    try:
+        return day.replace(year=day.year - years)
+    except ValueError:
+        return day.replace(year=day.year - years, day=28)
+
+
+def load_facts(con: duckdb.DuckDBPyConnection, doc_id: str) -> dict[int, FactIndex]:
+    """1書類の facts を「当期から何年前か」ごとの索引にして返す。"""
+    grouped: dict[int, list[tuple]] = defaultdict(list)
+    rows = con.execute(
+        "SELECT element_id, unit, value, consolidated, period FROM facts WHERE doc_id = ?",
+        [doc_id],
+    ).fetchall()
+    for element_id, unit, value, consolidated, period in rows:
+        offset = period_offset(period)
+        if offset is not None:
+            grouped[offset].append((element_id, unit, value, consolidated))
+    return {offset: FactIndex(facts) for offset, facts in grouped.items()}
 
 
 def build(con: duckdb.DuckDBPyConnection, mapping: Mapping) -> pd.DataFrame:
     """facts 全体から financials の DataFrame を作る。"""
-    # 主キーごとに結果を持ち、訂正報告書では値のある項目だけを上書きする
-    # (訂正が一部の項目しか含まない場合に、元の値を NULL で潰さないため)
+    # 主キーごとに1行を持つ。同じ期に複数の情報源があるときの優先順位は
+    #   1. 当期として書かれている方 (offset が小さい方) が強い。
+    #      その年の有報の当期データは、翌年の有報の「前期」欄より項目が多い
+    #   2. 同じ offset なら提出が後の方が強い (訂正報告書が元の有報を上書きする)
+    # 弱い情報源は、まだ埋まっていない項目だけを埋める
     merged: dict[tuple, dict] = {}
 
     for doc_id, edinet_code, doc_type_code, p_start, p_end, _submit in load_documents(con):
-        index = load_facts(con, doc_id)
-        for consolidated in (True, False):
-            if not index.has_basis(consolidated):
+        doc_type = DOC_TYPES.get(doc_type_code, "annual")
+        indexes = load_facts(con, doc_id)
+        for offset, index in sorted(indexes.items()):
+            # 半期報告書からは当期しか作らない
+            if doc_type == "semiannual" and offset > 0:
                 continue
-            values = build_row(index, mapping, consolidated)
-            if all(values.get(c) is None for c in SUBSTANCE_COLUMNS):
-                continue
+            for consolidated in (True, False):
+                if not index.has_basis(consolidated):
+                    continue
+                values = build_row(index, mapping, consolidated)
+                if all(values.get(c) is None for c in SUBSTANCE_COLUMNS):
+                    continue
 
-            doc_type = DOC_TYPES.get(doc_type_code, "annual")
-            key = (edinet_code, fiscal_year(p_end), consolidated, doc_type)
-            row = merged.setdefault(
-                key,
-                {
-                    "edinet_code": edinet_code,
-                    "fiscal_year": fiscal_year(p_end),
-                    "period_end": p_end,
-                    "period_months": period_months(p_start, p_end),
-                    "consolidated": consolidated,
-                    "doc_type": doc_type,
-                    **dict.fromkeys(FINANCIAL_COLUMNS),
-                    "source_doc_id": doc_id,
-                },
-            )
-            row["period_end"] = p_end
-            row["period_months"] = period_months(p_start, p_end)
-            row["source_doc_id"] = doc_id
-            for column, value in values.items():
-                if value is not None:
-                    row[column] = value
+                year = fiscal_year(p_end) - offset
+                key = (edinet_code, year, consolidated, doc_type)
+                row = merged.get(key)
+                if row is None:
+                    row = {
+                        "edinet_code": edinet_code,
+                        "fiscal_year": year,
+                        "period_end": None,
+                        "period_months": None,
+                        "consolidated": consolidated,
+                        "doc_type": doc_type,
+                        **dict.fromkeys(FINANCIAL_COLUMNS),
+                        "source_doc_id": doc_id,
+                        "source_period": None,
+                        "_offset": None,
+                    }
+                    merged[key] = row
 
-    df = pd.DataFrame(list(merged.values()))
+                stronger = row["_offset"] is None or offset <= row["_offset"]
+                if stronger:
+                    row["_offset"] = offset
+                    row["source_doc_id"] = doc_id
+                    row["source_period"] = "Current" if offset == 0 else f"Prior{offset}"
+                    row["period_end"] = shift_years(p_end, offset)
+                    # 過去年度は決算期間が書類に無いので通常決算(12ヶ月)とみなす。
+                    # 変則決算だった年は誤るが、バックフィルで当期データに置き換わる
+                    row["period_months"] = period_months(p_start, p_end) if offset == 0 else 12
+                for column, value in values.items():
+                    if value is not None and (stronger or row[column] is None):
+                        row[column] = value
+
+    rows = [{k: v for k, v in row.items() if k != "_offset"} for row in merged.values()]
+    df = pd.DataFrame(rows)
     if not df.empty:
         df["employees"] = df["employees"].astype("Int64")
     return df

@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS financials (         -- 横持ち (1社・1期・連�
   eps DOUBLE, bps DOUBLE, dividend_per_share DOUBLE,
   employees INT, shares_outstanding DOUBLE,
   source_doc_id TEXT,
+  source_period TEXT,                           -- Current / Prior1.. 値の出どころの期
   PRIMARY KEY (edinet_code, fiscal_year, consolidated, doc_type)
 );
 
@@ -54,7 +55,10 @@ CREATE TABLE IF NOT EXISTS etl_log (            -- 実行ログ
 
 
 # 既存DBに後から足した列。CREATE TABLE IF NOT EXISTS では追加されないため個別に流す
-MIGRATIONS_SQL = ("ALTER TABLE documents ADD COLUMN IF NOT EXISTS has_csv BOOLEAN",)
+MIGRATIONS_SQL = (
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS has_csv BOOLEAN",
+    "ALTER TABLE financials ADD COLUMN IF NOT EXISTS source_period TEXT",
+)
 
 
 def connect(path: Path | str | None = None) -> duckdb.DuckDBPyConnection:

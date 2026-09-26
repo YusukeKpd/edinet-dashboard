@@ -51,6 +51,9 @@ uv run python -m etl.parse_csv
 # 5. 整形: facts -> financials（横持ち）。APIは叩かない
 uv run python -m etl.build_financials --coverage
 
+# 6. 指標: financials -> metrics。APIは叩かない
+uv run python -m etl.build_metrics --report
+
 # ETL 全体のエントリポイント（フェーズ2で実装）
 uv run python -m etl.run --help
 ```
@@ -62,6 +65,7 @@ uv run python -m etl.run --help
 | `fetch_docs` | 書類取得API `type=5` | `data/raw/*.zip` + `documents.downloaded` |
 | `parse_csv` | `data/raw/*.zip` | `facts` + `documents.parsed` / `accounting_standard` |
 | `build_financials` | `facts` + `config/mapping.yaml` | `financials` |
+| `build_metrics` | `financials` | `metrics`（Streamlit が読むもの） |
 
 `parse_csv` が `facts` に入れるのは **標準タクソノミ（jpcrp_cor / jppfs_cor / jpigp_cor / jpdei_cor）**
 かつ **数値** かつ **次元のないコンテキスト** の行だけ。セグメント別・株主別などの内訳と、
@@ -71,6 +75,29 @@ uv run python -m etl.run --help
 `build_financials` は `facts` からの導出物なので毎回 `financials` を全置換する。
 `mapping.yaml` を変えたら流し直すだけでよく、EDINET には一切アクセスしない。
 `--coverage` を付けると項目充足率が出る。マッピングを育てるときはこれを見ながら進める。
+
+### 複数年度の作り方
+
+有報の「主要な経営指標等の推移」には**過去5年分**が `Prior{n}Year*` コンテキストで入って
+いる。`build_financials` はこれも取り込むので、**有報1通だけで5年の推移が作れる**
+（追加のAPI呼び出しは不要）。各行の `source_period` に `Current` / `Prior1`.. が入るので、
+どの期の欄から取った値かを後から追える。
+
+ただし経営指標表に載っている項目しか遡れない。実測（84社・連結）:
+
+| 項目 | FY-4 〜 FY-2 | FY-1・当期 |
+|---|---|---|
+| 売上高・総資産・自己資本・純利益・EPS・BPS・CF・従業員数 | 100% | 100% |
+| 経常利益 | 97% | 96% |
+| **営業利益** | **1%** | 88% |
+| **有利子負債** | **0%** | 83% |
+
+営業利益と有利子負債は当期・前期しか無い（本表にしか出てこないため）。したがって
+**営業利益率・営業利益成長率・D/Eレシオ・ネットキャッシュは直近2期のみ**で、
+売上・利益・ROE・ROA・自己資本比率は5期そろう。
+5年CAGR は6期分必要なので、有報1通では算出できない。
+いずれも過去の有報そのものを取ってくるバックフィル（ステップ8）で解消する。
+当期データは前期欄より強いので、バックフィルすれば自動的に置き換わる。
 
 ### 勘定科目マッピングの注意点
 
@@ -130,7 +157,7 @@ gh workflow run update.yml --repo YusukeKpd/edinet-dashboard
   - [x] ステップ4: `fetch_doc_list`（documents）
   - [x] ステップ5: `fetch_docs` + `parse_csv`（facts）
   - [x] ステップ6: `mapping.yaml` + `build_financials`（主要12社の数値を有報と照合）
-  - [ ] ステップ7: `build_metrics`
+  - [x] ステップ7: `build_metrics`（ROEが有報の開示値と一致）
   - [ ] ステップ8: 過去5年バックフィル
 - [ ] フェーズ2: Releases 入出力 + Actions ワークフロー
 - [ ] フェーズ3: Streamlit 各ページ + デプロイ
