@@ -539,6 +539,21 @@ def test_period_months(start, end, expected):
     assert build_financials.period_months(start, end) == expected
 
 
+@pytest.mark.parametrize(
+    ("start", "expected"),
+    [
+        (date(2024, 4, 1), date(2024, 9, 30)),  # 3月決算
+        (date(2024, 1, 1), date(2024, 6, 30)),  # 12月決算
+        (date(2023, 10, 1), date(2024, 3, 31)),  # 9月決算（年をまたぐ）
+        (date(2024, 3, 21), date(2024, 9, 20)),  # 20日決算
+        (date(2024, 8, 31), date(2025, 2, 28)),  # 末日が短い月に寄る
+    ],
+)
+def test_half_year_end(start, expected):
+    """半期報告書の書類メタは事業年度を指すので、上期の末日を開始日から作る。"""
+    assert build_financials.half_year_end(start) == expected
+
+
 # ---------------------------------------------------------- mapping.yaml の健全性
 
 

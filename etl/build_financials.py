@@ -17,6 +17,7 @@ mapping.yaml の _fallback_to_separate に挙げた項目（配当・発行済�
 from __future__ import annotations
 
 import argparse
+import calendar
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -232,6 +233,23 @@ def shift_years(day: date, years: int) -> date:
         return day.replace(year=day.year - years, day=28)
 
 
+def half_year_end(period_start: date) -> date:
+    """上期の末日。開始日の6ヶ月後の前日（2024-04-01 -> 2024-09-30）。
+
+    半期報告書(160)の書類メタデータが持つ periodStart/periodEnd は、半期ではなく
+    その半期が属する**事業年度**を指す。そのまま使うと6ヶ月分の数値が
+    period_months=12 の行になってしまうため、開始日から上期の末日を作る。
+    """
+    # 開始日の「前日」の6ヶ月後。1日開始なら6ヶ月目の月末、20日決算(21日開始)なら20日。
+    # 月末開始で6ヶ月後に同じ日が無いときは、その月の末日に寄せる
+    month = period_start.month + (5 if period_start.day == 1 else 6)
+    year = period_start.year + (month - 1) // 12
+    month = (month - 1) % 12 + 1
+    last = calendar.monthrange(year, month)[1]
+    day = last if period_start.day == 1 else min(period_start.day - 1, last)
+    return date(year, month, day)
+
+
 def load_facts(con: duckdb.DuckDBPyConnection, doc_id: str) -> dict[int, FactIndex]:
     """1書類の facts を「当期から何年前か」ごとの索引にして返す。"""
     grouped: dict[int, list[tuple]] = defaultdict(list)
@@ -257,6 +275,12 @@ def build(con: duckdb.DuckDBPyConnection, mapping: Mapping) -> pd.DataFrame:
 
     for doc_id, edinet_code, doc_type_code, p_start, p_end, _submit in load_documents(con):
         doc_type = DOC_TYPES.get(doc_type_code, "annual")
+        # 半期報告書の書類メタは事業年度を指すので、行に載せる期間は上期に直す。
+        # 年度の判定にはそのまま事業年度末(p_end)を使う（9月決算の上期を前年度に
+        # 振り分けてしまわないため）
+        row_end, row_months = p_end, period_months(p_start, p_end)
+        if doc_type == "semiannual" and p_start is not None:
+            row_end, row_months = half_year_end(p_start), 6
         indexes = load_facts(con, doc_id)
         for offset, index in sorted(indexes.items()):
             # 半期報告書からは当期しか作らない
@@ -292,10 +316,10 @@ def build(con: duckdb.DuckDBPyConnection, mapping: Mapping) -> pd.DataFrame:
                     row["_offset"] = offset
                     row["source_doc_id"] = doc_id
                     row["source_period"] = "Current" if offset == 0 else f"Prior{offset}"
-                    row["period_end"] = shift_years(p_end, offset)
+                    row["period_end"] = shift_years(row_end, offset)
                     # 過去年度は決算期間が書類に無いので通常決算(12ヶ月)とみなす。
                     # 変則決算だった年は誤るが、バックフィルで当期データに置き換わる
-                    row["period_months"] = period_months(p_start, p_end) if offset == 0 else 12
+                    row["period_months"] = row_months if offset == 0 else 12
                 for column, value in values.items():
                     if value is not None and (stronger or row[column] is None):
                         row[column] = value
