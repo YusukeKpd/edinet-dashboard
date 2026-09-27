@@ -35,7 +35,7 @@ GitHub Actions (週1 + 手動)          Streamlit Community Cloud
 | `etl/` | 取得・パース・整形。`run.py` がエントリポイント |
 | `app/` | Streamlit。`Home.py` + `pages/` + `lib/` |
 | `config/mapping.yaml` | 勘定科目 → EDINETタクソノミ要素IDの優先順リスト |
-| `tests/` | `test_parse.py`（パース）/ `test_financials.py`（数値照合） |
+| `tests/` | `test_parse.py`（パース）/ `test_financials.py`（数値照合）/ `test_app.py`・`test_app_pages.py`（画面） |
 | `data/` | ローカル作業用。**gitignore 対象** |
 | `docs/` | 仕様書 |
 
@@ -47,6 +47,9 @@ uv run python -m etl.run --help          # ETL
 uv run streamlit run app/Home.py         # ダッシュボードをローカル起動
 uv run pytest                            # テスト
 uv run ruff check . && uv run ruff format .
+
+# 通信せずに手元の Parquet で画面を確認する
+EDINET_PARQUET_DIR=data/parquet uv run streamlit run app/Home.py
 ```
 
 ## 実装時の注意（仕様書 §10 より）
@@ -58,3 +61,13 @@ uv run ruff check . && uv run ruff format .
 - 0除算は NULL。
 - 金融業（銀行・保険・証券）は営業利益等の欠損を許容する。
 - 勘定科目の揺れが最大の工数。項目充足率を見ながら `mapping.yaml` を段階的に足す。
+
+## ダッシュボード側の注意
+
+- **表示ルールは `app/lib/ui.py` だけに置く。** 金額は百万円・比率は%（小数1桁）・欠損は「–」。
+  指標を足すときは `ui.FIELDS` に `Field` を1行足せば全ページに出る。
+- **`app/` から `etl/` を import しない。** Streamlit Cloud には `requirements.txt` の依存しか
+  入らない（tenacity や python-dotenv が無い）。
+- **表は数値のまま渡し、書式は `column_config` に任せる。** 文字列に整形するとソートが壊れる。
+- 画面を変えたら `uv run pytest tests/test_app_pages.py` を実行する（`data/parquet` が要る）。
+  `AppTest` で各ページを実際に走らせるので、開くまで分からない壊れ方をここで捕まえる。

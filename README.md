@@ -29,6 +29,14 @@ uv run pytest
 uv run ruff check .
 ```
 
+ダッシュボードは既定で Releases から Parquet を落とす。手元の `data/parquet` を読ませたい
+ときは `EDINET_PARQUET_DIR` を指すと通信しなくなる（`etl.release_io --publish` / `--restore`
+がそこへ書く）。
+
+```bash
+EDINET_PARQUET_DIR=data/parquet uv run streamlit run app/Home.py
+```
+
 ### ETL（ローカル実行）
 
 各ステップは独立して実行でき、何度流しても結果が変わらない（冪等）。
@@ -179,6 +187,65 @@ Actions は毎回まっさらな環境で動くので、ETL は `--restore` で�
   配当と発行済株式数だけ（`_fallback_to_separate`）。混ぜると IFRS で営業利益を表示しない
   会社（日立・三菱商事）の連結行に、日本基準の単体営業利益が入ってしまう。
 
+## ダッシュボード
+
+`app/Home.py` がエントリポイント。Streamlit の multipage なので `app/pages/*.py` が
+そのままサイドバーのページになる。**表示専用で、ETL は一切走らせない**（CLAUDE.md ルール5）。
+
+| ページ | 中身 |
+|---|---|
+| `Home.py` | 収録件数と注意書き |
+| `1_スクリーニング.py` | 業種・売上規模・指標レンジで絞込 → 表＋CSV／散布図 |
+| `2_企業比較.py` | 最大5社の時系列折れ線、レーダーチャート、横並び比較 |
+| `3_企業詳細.py` | 主要指標カード、PL/BS/CF推移、半期、業種中央値との比較 |
+| `4_業種分析.py` | 業種別の箱ひげ図、業種サマリ、業種内ランキング |
+| `9_データ管理.py` | 最終更新・実行ログ・項目充足率、手動更新（管理者のみ） |
+
+| モジュール | 役割 |
+|---|---|
+| `app/lib/data.py` | Releases から Parquet を落として DuckDB（インメモリ）に張る。問い合わせの入口 |
+| `app/lib/ui.py` | 指標カタログ（`FIELDS`）と表示ルール、ページ共通のヘッダ・企業選択 |
+| `app/lib/charts.py` | Plotly（散布図・時系列・レーダー・箱ひげ・CF） |
+| `app/lib/github.py` | `workflow_dispatch` の起動と実行状況の取得 |
+
+落とすのは `metrics` / `companies` / `etl_log` の3つだけ（合計14MB弱）。`facts` と
+`documents` は ETL 専用で、画面では使わないうえ100MB超あるので取りに行かない。
+
+キャッシュは Parquet のファイル更新時刻で見ている。`@st.cache_resource` に TTL を
+付けないと、Cloud のプロセスが生きている限り初回の Parquet を握ったままになり、
+毎週の更新が画面に出てこない。取り直しに失敗したときは古いファイルで描画を続ける。
+
+### 表示ルール（仕様書 §6.2）
+
+- 金額は**百万円**、比率は **%（小数1桁）**、欠損は「–」。`app/lib/ui.py` に集約している。
+- 表は**数値のまま**スケールして書式は `column_config` に任せる。文字列に整形すると
+  列ヘッダのソートが辞書順になり、金額の並べ替えが壊れる。
+- 表示対象は各社の**最新の通期決算**（`doc_type='annual'`）。決算月が違うので
+  「最新年度」は会社ごとに異なる。半期の行は企業詳細ページでだけ別枠で見せる。
+- レーダーチャートは生値ではなく**上場企業内でのパーセンタイル**を描く。指標ごとに桁が
+  違うので重ねられない。D/Eレシオのような「低いほど良い」指標は向きを反転する。
+
+### 画面のテスト
+
+`tests/test_app.py` は指標カタログと整形の単体テスト。**カタログの列が `metrics` に
+実在するか**をここで担保している（ずれると選んだ瞬間に KeyError で落ちる）。
+
+`tests/test_app_pages.py` は Streamlit の `AppTest` で各ページを実際に走らせる。
+`ui.show_table` の引数ミスや Plotly の API 変更のような「開くまで分からない」壊れ方は
+ここでしか捕まらない。データが要るので `data/parquet` があるときだけ走り、
+Actions（ETL より前にテストする）ではスキップされる。
+
+### Streamlit Community Cloud へのデプロイ
+
+1. https://share.streamlit.io で **New app** → リポジトリ `YusukeKpd/edinet-dashboard`、
+   ブランチ `main`、Main file path に **`app/Home.py`**
+2. **Advanced settings → Secrets** に `.streamlit/secrets.toml.example` の中身を貼る
+   （`GITHUB_TOKEN` / `ADMIN_PASSWORD` / `REPO`）
+3. 依存は `requirements.txt`（app が使うものだけ）。`pyproject.toml` は見られない
+
+`GITHUB_TOKEN` は fine-grained PAT で**対象リポジトリの Actions: write だけ**を付ける。
+無くても画面は出る（データ管理ページの更新ボタンが使えないだけ）。
+
 ## Secrets
 
 | 場所 | キー | 用途 |
@@ -225,4 +292,10 @@ gh workflow run update.yml --repo YusukeKpd/edinet-dashboard
 - [x] フェーズ2: Releases 入出力 + Actions ワークフロー
   - [x] ステップ9: `release_io`（Releases との Parquet 入出力）
   - [x] ステップ10: `update.yml`（復元 -> 差分取得 -> 再計算 -> 公開）
-- [ ] フェーズ3: Streamlit 各ページ + デプロイ
+- [x] フェーズ3: Streamlit 各ページ
+  - [x] ステップ11: `app/lib/data.py` + `Home.py`（Releases -> DuckDB、最終更新日の表示）
+  - [x] ステップ12: 企業比較（時系列・レーダー・横並び）
+  - [x] ステップ13: スクリーニング（絞込・表・CSV・散布図）
+  - [x] ステップ14: 企業詳細 / 業種分析
+  - [x] ステップ15: データ管理（実行ログ・充足率・手動更新ボタン）
+  - [ ] ステップ16: Streamlit Community Cloud へデプロイ
